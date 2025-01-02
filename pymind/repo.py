@@ -8,6 +8,7 @@ import tempfile as tmp
 
 import zipfile as zp
 
+import pygit2
 from semver import Version
 
 from pygit2 import Oid, Commit, Signature, Index, Tree
@@ -24,11 +25,12 @@ def _pymind_initdir(
 
     (dpath / Path("data")).mkdir(exist_ok=True)
     (dpath / Path("checkpoints")).mkdir(exist_ok=True)
+    (dpath / Path("hyperparameters.yaml")).mkdir(exist_ok=True)
     (dpath / Path("training.py")).touch()
     (dpath / Path("initial.state_dict")).touch()
     (dpath / Path("dataset.py")).mkdir(exist_ok=True)
     (dpath / Path("model.py")).touch()
-    (dpath / Path(".vc")).mkdir(exist_ok=True)
+    (dpath / Path("versioning")).mkdir(exist_ok=True)
 
 
 def _pymind_extract_file_to_dpath(
@@ -48,6 +50,11 @@ def _pymind_extract_file_to_tmp(
 def _pymind_export(dpath, fpath):
     pass
 
+
+def _pymind_get_all_tags(repo: Repository):
+    tags = [ref for ref in repo.listall_references() if ref.startswith('refs/tags/')]
+    tags.sort(reverse=True)
+    return tags
 
 class MindDir:
     """
@@ -116,8 +123,8 @@ class MindObject(MindDir):
         # so, extract it to a tmpdir.
         if dpath is None and fpath is not None:
             super().__init__(
-                dpath=_pymind_extract_file_to_tmp(fpath)
-                _istmp=False,
+                dpath=_pymind_extract_file_to_tmp(fpath),
+                _istmp=False
             )
         # an extracted mind-directory is provided 
         # without a mind-file; we will likely--at 
@@ -180,9 +187,9 @@ class Mind(Repository):
         elif mind:
             self._object = MindObject(fpath=None, dpath=mind)
             
-        super().__init__(path=self._object._basepath)
+        super().__init__(path=self._object._basepath / Path("versioning"))
         
-        self.create_commit(
+        commit_oid: Oid = self.create_commit(
             reference_name="main", 
             author=Signature(
                 name="Author Name",
@@ -192,10 +199,22 @@ class Mind(Repository):
                 name="Committer Name", 
                 email=owner_name
             ),
-            message="0.0.0",
+            message="Version 0.0.0; Base Template",
             tree=self.TreeBuilder.write(),
         )
-    
+
+        self.create_tag(
+            name="v0.0.0",
+            oid=commit_oid,
+            type=pygit2.GIT_OBJ_COMMIT,
+            tagger=Signature(
+                name="Author Name",
+                email=owner_name
+            ),
+            message="Version 0.0.0"
+        )
+
+        self.last_engineer = self.owner
     
     def export(self, fpath: Path | str | None):
         assert fpath is not None \
@@ -207,7 +226,6 @@ class Mind(Repository):
         self._object._fpath = fpath if fpath is not None \
             else self._object._fpath
     
-
     def save(self, version: Version, engineer_name: str | None = None):
         """
             Save the current state of the mind 
@@ -216,26 +234,53 @@ class Mind(Repository):
         # write all files to index.
         self.index.add_all()
         # commit the index to the head.
-        oid = self.create_commit(
+        commit_oid = self.create_commit(
             reference_name=self.head.name,
             author=Signature(name="Owner", email=self.owner),
-            commiter=Signature("Engineer", email=engineer_name)
+            commiter=Signature("Engineer", email=engineer_name or self.last_engineer),
             tree=self.index.write_tree(),
             parents=[self.head.target]
         )
-    
+        # tag the commit with the version.
+        self.create_tag(
+            name="v" + str(version),
+            oid=commit_oid,
+            type=pygit2.GIT_OBJ_COMMIT,
+            tagger=Signature("Owner", email=self.owner),
+            message="Version" + str(version),
+        )
+        self.last_engineer = engineer_name or self.last_engineer
+        
+    def save_build(self, engineer_name: str | None = None):
+        self.save(
+            version=self.latest.bump_build(),
+            engineer_name=engineer_name
+        )
 
+    def save_prelease(self, engineer_name: str | None = None):
+        self.save(
+            version=self.latest.bump_prerelease(),
+            engineer_name=engineer_name
+        )
+    
+    def save_patch(self, engineer_name: str | None = None):
+        self.save(
+            version=self.latest.bump_patch(),
+            engineer_name=engineer_name
+        )
+
+    def save_minor(self, engineer_name: str | None = None):
+        self.save(
+            version=self.latest.bump_patch(),
+            engineer_name=engineer_name
+        )
+
+    def save_major(self, engineer_name: str | None = None):
+        self.save(
+            version=self.latest.bump_major(),
+            engineer_name=engineer_name
+        )
+    
     @property
-    def variant(self):
-        self.head
-    
-    
-    @variant.setter
-    def variant(self, name):
-        ref = self.references.get(name)
-        if ref is None:
-            self.create_branch(
-                name=name,
-                commit=self.head.target
-            )
-        self.checkout(refname=ref.name)
+    def latest(self) -> Version:
+        return Version.parse(_pymind_get_all_tags(self)[0])
