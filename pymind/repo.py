@@ -1,16 +1,10 @@
 from typing import Self
-
 import os
-
 from pathlib import Path
-
 import tempfile as tmp
-
 import zipfile as zp
-
 import pygit2
 from semver import Version
-
 from pygit2 import Oid, Commit, Signature, Index, Tree
 from pygit2.repository import Repository
 
@@ -38,13 +32,18 @@ def _pymind_extract_file_to_dpath(
     to_dpath: str | Path
 ) -> Path:
     """extract the mind-file to a directory"""
-    pass
+    to_dpath = Path(to_dpath)
+    to_dpath.mkdir(parents=True, exist_ok=True)
+    with zp.ZipFile(fpath, 'r') as zip_ref:
+        zip_ref.extractall(to_dpath)
 
 
 def _pymind_extract_file_to_tmp(
     fpath
 ) -> tmp.TemporaryDirectory:
-    pass
+    to_dpath: tmp.TemporaryDirectory = tmp.TemporaryDirectory()
+    _pymind_extract_file_to_dpath(to_dpath=to_dpath)
+    return to_dpath
 
 
 def _pymind_export(dpath, fpath):
@@ -69,7 +68,6 @@ class MindDir:
     _basepath: Path | tmp.TemporaryDirectory | None = None 
     _files = []
     _istmp = False
-    _isnew = False
 
     def __init__(
         self,
@@ -79,7 +77,7 @@ class MindDir:
         path = Path(path)
 
         # the path is a mind-file; extract it to a tmpdir.
-        if path.isfile():
+        if path.is_file():
             self._basepath = _pymind_extract_file_to_tmp(path)
             self._istmp = True
         # the path is not an existing directory; 
@@ -87,7 +85,6 @@ class MindDir:
         elif not path.exists():
             self._basepath = path
             _pymind_initdir(dpath=path)
-            self._isnew = True
         # the path is an existing mind-directory.
         else:
             self._basepath = Path(path)
@@ -95,6 +92,9 @@ class MindDir:
         # get all the files in the directory, recursively.
         self._files = [(Path(dpath) / Path(fname)).resolve() for dpath, _, fnames in os.walk(self._basepath) for fname in fnames]
 
+    def __del__(self):
+        if self._istmp:
+            self._basepath.cleanup()
 
 class MindObject(MindDir):
     _fpath: str | Path | None= None
@@ -181,7 +181,7 @@ class Mind(Repository):
         mind = Path(mind)
 
         # mind-file provided.
-        if mind.isfile():
+        if mind.is_file():
             self._object = MindObject(fpath=mind, dpath=None)
         # mind-directory provided.
         elif mind:
@@ -284,3 +284,4 @@ class Mind(Repository):
     @property
     def latest(self) -> Version:
         return Version.parse(_pymind_get_all_tags(self)[0])
+
