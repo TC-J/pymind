@@ -17,16 +17,17 @@ class Data(ABC):
         a database to a file; it could even ignore the data_dir and
         just load the data from a local or remote database server.
     """
+    def __init__(self, data_dir):
+        self.data_dir = data_dir
+
     @abstractmethod
-    def install(self, data_dir) -> bool:
+    def __install__(self) -> bool:
         pass
 
-
     @abstractmethod
-    def preprocess(self, data_dir) -> bool:
+    def __preprocess__(self) -> bool:
         pass
 
-
     @abstractmethod
-    def uninstall(self, data_dir) -> bool:
+    def __uninstall__(self) -> bool:
         pass

@@ -7,8 +7,9 @@ import pygit2
 from semver import Version
 from pygit2 import Oid, Commit, Signature, Index, Tree
 from pygit2.repository import Repository
+from pymind.util import ensure_path
 
-def _pymind_initdir(
+def mind_initdir(
     dpath: Path | tmp.TemporaryDirectory | str
 ):
     """"create the template directory at dpath."""
@@ -19,15 +20,14 @@ def _pymind_initdir(
 
     (dpath / Path("data")).mkdir(exist_ok=True)
     (dpath / Path("checkpoints")).mkdir(exist_ok=True)
-    (dpath / Path("hyperparameters.yaml")).mkdir(exist_ok=True)
-    (dpath / Path("training.py")).touch()
-    (dpath / Path("initial.state_dict")).touch()
-    (dpath / Path("dataset.py")).mkdir(exist_ok=True)
-    (dpath / Path("model.py")).touch()
+    (dpath / Path("hyperparameters.yaml")).touch(exist_ok=True)
+    (dpath / Path("training.py")).touch(exist_ok=True)
+    (dpath / Path("initial.state_dict")).touch(exist_ok=True)
+    (dpath / Path("dataset.py")).touch(exist_ok=True)
+    (dpath / Path("model.py")).touch(exist_ok=True)
     (dpath / Path("versioning")).mkdir(exist_ok=True)
 
-
-def _pymind_extract_file_to_dpath(
+def mind_extract_file_to_dpath(
     fpath: str | Path, 
     to_dpath: str | Path
 ) -> Path:
@@ -37,23 +37,57 @@ def _pymind_extract_file_to_dpath(
     with zp.ZipFile(fpath, 'r') as zip_ref:
         zip_ref.extractall(to_dpath)
 
-
-def _pymind_extract_file_to_tmp(
+def mind_extract_file_to_tmp(
     fpath
 ) -> tmp.TemporaryDirectory:
-    to_dpath: tmp.TemporaryDirectory = tmp.TemporaryDirectory()
-    _pymind_extract_file_to_dpath(to_dpath=to_dpath)
+    to_dpath = tmp.TemporaryDirectory()
+    mind_extract_file_to_dpath(
+        fpath=fpath, 
+        to_dpath=ensure_path(to_dpath)
+    )
     return to_dpath
 
+def mind_export(
+    dpath: str | Path,
+    fpath: str | Path
+):
+    dpath = Path(dpath)
+    with zp.ZipFile(
+        file=fpath, 
+        mode='w', 
+        compresslevel=9
+    ) as zip_ref:
+        for file in dpath.rglob('*'):
+            zip_ref.write(
+                filename=file,
+                arcname=file.relative_to(dpath)
+            )
 
-def _pymind_export(dpath, fpath):
-    pass
-
-
-def _pymind_get_all_tags(repo: Repository):
+def mind_get_all_tags(repo: Repository):
     tags = [ref for ref in repo.listall_references() if ref.startswith('refs/tags/')]
     tags.sort(reverse=True)
     return tags
+
+def mind_commit(repo, refname, owner, engineer, msg, parents):
+    repo.index.add_all()
+    repo.index.write()
+    return repo.create_commit(
+        refname,
+        pygit2.Signature("Owner", owner),
+        pygit2.Signature("Engineer", engineer),
+        msg,
+        repo.index.write_tree(),
+        parents
+    )
+
+def mind_version_tag(repo, version, oid, owner):
+    repo.create_tag(
+        version,
+        oid,
+        pygit2.GIT_OBJECT_COMMIT,
+        Signature("Owner", owner),
+        "Version " + version
+    )
 
 class MindDir:
     """
@@ -66,43 +100,75 @@ class MindDir:
         mind-directory template.
     """
     _basepath: Path | tmp.TemporaryDirectory | None = None 
-    _files = []
     _istmp = False
 
     def __init__(
         self,
-        path: Path | str,
+        path: tmp.TemporaryDirectory | Path | str,
+        init: bool = False,
         _istmp: bool = False
     ):
-        path = Path(path)
+        path = ensure_path(path)
 
         # the path is a mind-file; extract it to a tmpdir.
         if path.is_file():
-            self._basepath = _pymind_extract_file_to_tmp(path)
+            self._basepath = \
+                mind_extract_file_to_tmp(path)
+
             self._istmp = True
         # the path is not an existing directory; 
         # initialize the directory template.
         elif not path.exists():
             self._basepath = path
-            _pymind_initdir(dpath=path)
+            mind_initdir(dpath=path)
         # the path is an existing mind-directory.
         else:
+            if init:
+                mind_initdir(dpath=path)
             self._basepath = Path(path)
         
-        # get all the files in the directory, recursively.
-        self._files = [(Path(dpath) / Path(fname)).resolve() for dpath, _, fnames in os.walk(self._basepath) for fname in fnames]
+    
+    def export(self, fpath):
+        mind_export(
+            dpath=self._basepath,
+            fpath=fpath
+        )
 
     def __del__(self):
         if self._istmp:
             self._basepath.cleanup()
 
+    @property
+    def files(self):
+        return [
+            (Path(dpath) / Path(fname)).resolve() \
+                for dpath, _, fnames \
+                in os.walk(self.basepath) \
+                for fname in fnames
+        ]
+
+    @property
+    def basepath(self):
+        return \
+            Path(self._basepath) \
+            if not isinstance(
+                self._basepath,
+                tmp.TemporaryDirectory
+            ) else Path(self._basepath.name)
+
 class MindObject(MindDir):
+    """
+        This is an object for managing the mind. The
+        object is an extracted mind-directory and/or
+        mind-file.
+
+    """
     _fpath: str | Path | None= None
 
     def __init__(
         self, 
-        fpath: str | Path | None,
-        dpath: str | Path | MindDir | None,
+        fpath: str | Path | None = None,
+        dpath: str | Path | None = None
     ):
         """
             Create a MindObject instance.
@@ -119,40 +185,53 @@ class MindObject(MindDir):
         # either fpath or dpath must be provided.
         assert fpath is not None or dpath is not None
 
+        fpath = Path(fpath) if fpath is not None else fpath
+
+        dpath = Path(dpath) if dpath is not None else dpath
+
+        # given: fpath.
         # an unextracted mind-file is provided;
         # so, extract it to a tmpdir.
         if dpath is None and fpath is not None:
             super().__init__(
-                dpath=_pymind_extract_file_to_tmp(fpath),
+                path=mind_extract_file_to_tmp(fpath),
                 _istmp=False
             )
+        # given: dpath, fpath
         # an extracted mind-directory is provided 
         # without a mind-file; we will likely--at 
         # least could--create a mind-file, later.
         elif dpath is not None and fpath is not None:
-            self._fpath = None
+            self._fpath = fpath
 
             dpath = Path(dpath)
 
             # the dpath does not exist; the template will
             # be created.
             if not dpath.exists():
-                super.__init__(
-                    dpath=dpath, 
+                super().__init__(
+                    path=dpath, 
                     _isnew=True
                 )
             # the dpath exists.
             else:
-                super.__init__(dpath=dpath)
-        # an the mind-file and mind-directory paths are
-        # provided.
-        else: 
-            self._fpath = Path(fpath)
-
-            dpath
-                
-            super().__init__(dpath=dpath)
-
+                super().__init__(path=dpath)
+            
+            # the fpath does not exist; create a
+            # mind-file.
+            if not fpath.exists():
+                self.export(fpath=fpath)
+        # given: dpath.
+        # an extracted mind-file is provided; use
+        # it directly.
+        else:
+            super().__init__(path=dpath)
+    
+    @property
+    def mind_file(self):
+        return self._fpath \
+            if not isinstance(self._fpath, tmp.TemporaryDirectory) \
+            else Path(self._fpath.name)
 
 class Mind(Repository):
     """
@@ -169,14 +248,14 @@ class Mind(Repository):
     def __init__(
         self, 
         mind: Path | str,
-        owner_name: str,
+        owner: str,
     ):
         """
             Provide an extracted mind-directory, a
             directory-path that does not exist, 
             or a mind-file that does exist.
         """
-        self.owner = owner_name
+        self.owner = owner
         
         mind = Path(mind)
 
@@ -184,104 +263,121 @@ class Mind(Repository):
         if mind.is_file():
             self._object = MindObject(fpath=mind, dpath=None)
         # mind-directory provided.
-        elif mind:
+        else:
             self._object = MindObject(fpath=None, dpath=mind)
-            
-        super().__init__(path=self._object._basepath / Path("versioning"))
         
-        commit_oid: Oid = self.create_commit(
-            reference_name="main", 
-            author=Signature(
-                name="Author Name",
-                email=owner_name
-            ), 
-            commiter=Signature(
-                name="Committer Name", 
-                email=owner_name
-            ),
-            message="Version 0.0.0; Base Template",
-            tree=self.TreeBuilder.write(),
-        )
+        vcpath = self._object.basepath / Path("versioning")
 
-        self.create_tag(
-            name="v0.0.0",
-            oid=commit_oid,
-            type=pygit2.GIT_OBJ_COMMIT,
-            tagger=Signature(
-                name="Author Name",
-                email=owner_name
-            ),
-            message="Version 0.0.0"
-        )
+        if not (vcpath / Path("objects")).exists():
+            repo = pygit2.init_repository(
+                path=vcpath, 
+                workdir_path="../",
+                flags=pygit2.GIT_REPOSITORY_INIT_NO_DOTGIT_DIR\
+                    | pygit2.GIT_REPOSITORY_INIT_MKDIR
+            )
 
-        self.last_engineer = self.owner
+            mind_commit(
+                repo=repo,
+                refname="HEAD",
+                owner=self.owner,
+                engineer=self.owner,
+                msg="Base Template",
+                parents=[]
+            )
+
+        super().__init__(path=vcpath, flags=pygit2.GIT_REPOSITORY_OPEN_NO_DOTGIT)
+            
+        mind_version_tag(
+            repo=self,
+            version="0.0.0",
+            oid=self.head.target,
+            owner=self.owner
+        )
     
     def export(self, fpath: Path | str | None):
         assert fpath is not None \
             or self._object._fpath is not None
         
-        _pymind_export(fpath if fpath is not None \
+        mind_export(fpath if fpath is not None \
             else self._object._fpath, self._object._basepath)
 
         self._object._fpath = fpath if fpath is not None \
             else self._object._fpath
     
-    def save(self, version: Version, engineer_name: str | None = None):
+    def save(self, version: Version, engineer: str | None = None):
         """
             Save the current state of the mind 
             on the current variant.
         """
-        # write all files to index.
-        self.index.add_all()
         # commit the index to the head.
-        commit_oid = self.create_commit(
-            reference_name=self.head.name,
-            author=Signature(name="Owner", email=self.owner),
-            commiter=Signature("Engineer", email=engineer_name or self.last_engineer),
-            tree=self.index.write_tree(),
+        commit_oid = mind_commit(
+            repo=self,
+            refname=self.head.name,
+            engineer=engineer,
+            msg=f"Version {version}",
             parents=[self.head.target]
         )
+
         # tag the commit with the version.
-        self.create_tag(
-            name="v" + str(version),
+        mind_version_tag(
+            repo=self,
+            version=version,
             oid=commit_oid,
-            type=pygit2.GIT_OBJ_COMMIT,
-            tagger=Signature("Owner", email=self.owner),
-            message="Version" + str(version),
         )
-        self.last_engineer = engineer_name or self.last_engineer
         
-    def save_build(self, engineer_name: str | None = None):
+    def save_build(self, engineer: str | None = None):
         self.save(
             version=self.latest.bump_build(),
-            engineer_name=engineer_name
+            engineer=engineer
         )
 
-    def save_prelease(self, engineer_name: str | None = None):
+    def save_prelease(self, engineer: str | None = None):
         self.save(
             version=self.latest.bump_prerelease(),
-            engineer_name=engineer_name
+            engineer=engineer
         )
     
-    def save_patch(self, engineer_name: str | None = None):
+    def save_patch(self, engineer: str | None = None):
         self.save(
             version=self.latest.bump_patch(),
-            engineer_name=engineer_name
+            engineer=engineer
         )
 
-    def save_minor(self, engineer_name: str | None = None):
+    def save_minor(self, engineer: str | None = None):
         self.save(
             version=self.latest.bump_patch(),
-            engineer_name=engineer_name
+            engineer=engineer
         )
 
-    def save_major(self, engineer_name: str | None = None):
+    def save_major(self, engineer: str | None = None):
         self.save(
             version=self.latest.bump_major(),
-            engineer_name=engineer_name
+            engineer=engineer
         )
     
     @property
     def latest(self) -> Version:
-        return Version.parse(_pymind_get_all_tags(self)[0])
+        return Version.parse(mind_get_all_tags(self)[0])
 
+
+    @property
+    def mind_object(self):
+        return self._object
+
+    @property
+    def mind_file(self):
+        return self.object.mind_file
+
+    @property
+    def basepath(self):
+        return self.object.basepath
+    
+    @property
+    def files(self):
+        return self.object.files
+    
+    
+    @property
+    def tags(self) -> list[str]:
+
+        return mind_get_all_tags(self)

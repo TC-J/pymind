@@ -1,20 +1,14 @@
-from pymind.data import Dataset
+from pymind.data import Data
 
-class MindDataset(Dataset):
+class MindData(Data):
     def __init__(self, data_dir):
         self.data_dir = data_dir
 
-    def __len__(self):
+    def __install__(self):
         pass
 
-    def __getitem__(self, idx):
+    def __preprocess__(self):
         pass
 
-    def install(self, data_dir):
-        pass
-
-    def preprocess(self, data_dir):
-        pass
-
-    def uninstall(self, data_dir):
+    def __uninstall__(self):
         pass
