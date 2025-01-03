@@ -1,5 +1,5 @@
 pygit2_overview.md
 **/__pycache__
-dev.ipynb
-tf_*.py
-*.py
+/dev.ipynb
+/tf_*.py
+/*.py

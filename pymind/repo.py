@@ -64,7 +64,7 @@ def mind_export(
             )
 
 def mind_get_all_tags(repo: Repository):
-    tags = [ref for ref in repo.listall_references() if ref.startswith('refs/tags/')]
+    tags = [Path(ref).parts[-1] for ref in repo.listall_references() if ref.startswith('refs/tags/')]
     tags.sort(reverse=True)
     return tags
 
@@ -73,20 +73,20 @@ def mind_commit(repo, refname, owner, engineer, msg, parents):
     repo.index.write()
     return repo.create_commit(
         refname,
-        pygit2.Signature("Owner", owner),
-        pygit2.Signature("Engineer", engineer),
+        pygit2.Signature("Owner Name", owner),
+        pygit2.Signature("Engineer Name", engineer),
         msg,
         repo.index.write_tree(),
         parents
     )
 
-def mind_version_tag(repo, version, oid, owner):
+def mind_version_tag(repo, version: Version, oid, owner):
     repo.create_tag(
-        version,
+        str(version),  # Convert version to string
         oid,
         pygit2.GIT_OBJECT_COMMIT,
-        Signature("Owner", owner),
-        "Version " + version
+        Signature("Owner Name", owner),
+        f"Version  + {version}" # Convert version to string
     )
 
 class MindDir:
@@ -313,16 +313,18 @@ class Mind(Repository):
         commit_oid = mind_commit(
             repo=self,
             refname=self.head.name,
+            owner=self.owner,
             engineer=engineer,
-            msg=f"Version {version}",
+            msg=f"Version {version}",  # Convert version to string
             parents=[self.head.target]
         )
 
         # tag the commit with the version.
         mind_version_tag(
             repo=self,
-            version=version,
+            version=version,  # Convert version to string
             oid=commit_oid,
+            owner=self.owner
         )
         
     def save_build(self, engineer: str | None = None):
@@ -331,7 +333,7 @@ class Mind(Repository):
             engineer=engineer
         )
 
-    def save_prelease(self, engineer: str | None = None):
+    def save_prerelease(self, engineer: str | None = None):
         self.save(
             version=self.latest.bump_prerelease(),
             engineer=engineer
@@ -345,7 +347,7 @@ class Mind(Repository):
 
     def save_minor(self, engineer: str | None = None):
         self.save(
-            version=self.latest.bump_patch(),
+            version=self.latest.bump_minor(),
             engineer=engineer
         )
 
@@ -357,11 +359,12 @@ class Mind(Repository):
     
     @property
     def latest(self) -> Version:
-        return Version.parse(mind_get_all_tags(self)[0])
-
+        return Version.parse(
+            version=mind_get_all_tags(self)[0]
+        )
 
     @property
-    def mind_object(self):
+    def object(self):
         return self._object
 
     @property
@@ -376,8 +379,6 @@ class Mind(Repository):
     def files(self):
         return self.object.files
     
-    
     @property
     def tags(self) -> list[str]:
-
         return mind_get_all_tags(self)
